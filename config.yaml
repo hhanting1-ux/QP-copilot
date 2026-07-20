@@ -1,0 +1,248 @@
+# =============================================================
+# QP Copilot 配置文件
+# 所有可调参数都集中在这里，不要把参数硬编码进 Python 代码。
+# =============================================================
+
+# -------------------------------------------------------------
+# 场景信息（只用于命名截图 / 报告，不会自动填入网页）
+# -------------------------------------------------------------
+scene:
+  # 场景 ID，留空则脚本运行时会让你手动输入
+  scene_id: ""
+  # 本次场景总帧数。运行时脚本会询问总帧数，直接回车就用这个默认值，
+  # 输入具体数字则按输入的来，不需要在这里改。
+  frame_count: 81
+  # 起始帧号。QP 平台底部帧号栏通常从 1 开始显示（1~81），
+  # 所以默认是 1；如果平台从 0 开始显示，改成 0。
+  start_frame_index: 1
+
+# -------------------------------------------------------------
+# 浏览器连接方式
+#   mode: "cdp"    -> 连接你手动打开、已登录 QP 平台的 Chrome（推荐，最安全）
+#   mode: "launch" -> 脚本自己启动一个新的浏览器窗口（需要你在新窗口里重新登录）
+# -------------------------------------------------------------
+browser:
+  mode: "cdp"
+  # 使用 cdp 模式时，Chrome 需要以调试端口启动，见 README「如何启动浏览器调试模式」
+  cdp_url: "http://127.0.0.1:9222"
+  # 使用 launch 模式时的设置
+  launch:
+    headless: false
+    channel: "chrome"      # 使用系统安装的 Chrome，而不是 Playwright 自带的 Chromium
+    slow_mo_ms: 0           # 每个操作后额外停顿的毫秒数，调试时可以调大方便观察
+
+  # 如果一个 CDP 连接下有多个标签页，按标题关键字匹配当前 QP 页面
+  # 留空则默认使用第一个打开的标签页
+  page_title_hint: ""
+
+# -------------------------------------------------------------
+# 翻帧方式（navigator.py 使用）——唯一支持的模式：visible_text_bottom
+#
+# 背景：全局 text=数字 会误匹配页面其它地方"长得像帧号"的隐藏/非底部元素，比如
+#   <span class="track-id">5</span>（标注对象 ID，不是帧号）。但 QP 平台底部帧号栏
+#   确实是纯文本渲染的，不能完全放弃文本匹配，所以加两层过滤：
+#     1. 文本精确匹配到目标帧号的元素里，只保留"可见"的
+#     2. 再只保留 bounding_box 落在页面底部区域（y > viewport_height * bottom_region_ratio）的
+#   多个候选时选最靠近底部的那个。一个候选都过滤不出来时（比如帧号栏做了虚拟滚动），
+#   自动 fallback 到坐标点击（下面 timeline_start_x/timeline_y/frame_step_px），并记录 warning，
+#   不会报错终止整个流程。
+# -------------------------------------------------------------
+navigation:
+  mode: "visible_text_bottom"
+
+  # 页面下 25% 区域（y > 75% 视口高度）才算"底部区域"，按实际帧号栏位置调整
+  bottom_region_ratio: 0.75
+  # 点击坐标在候选元素中心点基础上的偏移量（像素），一般不需要改
+  click_offset_x: 0
+  click_offset_y: 0
+  # 帧号显示格式。例如页面显示 "01" "02" 而不是 "1" "2"，改成 "{n:02d}"
+  frame_number_format: "{n}"
+
+  # 可见文本+底部过滤找不到候选时的兜底方式，目前只支持 "coordinates"
+  fallback_mode: "coordinates"
+  # ---- fallback 坐标点击用：第 1 个帧号（start_frame_index）在页面上的像素坐标，
+  #      以及每往后一帧横向间隔多少像素。量取方法见 README「如何配置坐标 fallback」。
+  timeline_start_x: 200
+  timeline_y: 780
+  frame_step_px: 12
+
+# -------------------------------------------------------------
+# 截图设置
+# -------------------------------------------------------------
+screenshot:
+  output_dir: "outputs/screenshots"
+  format: "png"          # png 或 jpeg
+  full_page: true         # 是否截取整页（包含滚动区域）
+  jpeg_quality: 90         # 仅当 format = jpeg 时生效
+
+# -------------------------------------------------------------
+# 网络资源记录（network_recorder.py）
+# 每帧应该加载 1 个 .pcd + 5 个 .jpg，这里用来验证脚本是否精准捕获到了这些请求，
+# 也是 frame_ready.py 判断"这一帧是否加载完成"的数据来源。
+# -------------------------------------------------------------
+network:
+  enabled: true
+  # 保留目录，用于以后如果需要缓存/下载实际的 PCD、JPG 文件（第一版只记录 URL，不下载文件）
+  assets_dir: "outputs/assets"
+  # 输出的 CSV 文件名（保存在 report.output_dir 下）
+  output_filename: "network_assets.csv"
+
+  # 判断一个 response 是不是 PCD / JPG 请求的正则（大小写不敏感），
+  # 如果平台的资源 URL 有特殊后缀或查询参数导致误判/漏判，在这里调整。
+  pcd_url_pattern: "\\.pcd(\\?|$)"
+  jpg_url_pattern: "\\.jpe?g(\\?|$)"
+
+  # 资源怎么归属到具体某一帧：
+  #   "timestamp"（默认，推荐）：从 URL 里提取共享的时间戳做分组，例如
+  #     .../lidar/1782718264.299724.pcd 和 .../camera/CAM_XXX/1782718264.299724.jpg
+  #     时间戳一致就认为是同一帧的数据。不依赖任何等待/清空的时机，
+  #     即使平台提前预加载了下一帧的资源也不会丢。QP 实测过是这个 URL 结构。
+  #   "window"：老式做法，只统计每帧开始（mark_frame_start）之后新增的资源。
+  #     如果 timestamp_pattern 提取不出时间戳（说明平台 URL 结构不一样），退回这个模式。
+  grouping_mode: "timestamp"
+  # 从 URL 里提取时间戳分组 key 的正则，必须带一个捕获组。
+  # 默认能匹配 "/lidar/1782718264.299724.pcd" 和 "/camera/CAM_FRONT_MID/1782718264.299724.jpg"
+  # 这种"文件名本身就是时间戳.扩展名"的结构。如果平台的时间戳格式不一样，改这里。
+  timestamp_pattern: "/(\\d+\\.\\d+)\\.(?:pcd|jpe?g)(?:\\?|$)"
+
+  # 每帧期望捕获到的数量，用于判断 status 是否为 warning
+  expected_pcd_count: 1
+  expected_jpg_count: 5
+
+# -------------------------------------------------------------
+# 帧就绪检测（frame_ready.py）
+# 切帧后不会直接截图，而是等这一帧真正"就绪"了才截图：
+#   1. 抓到期望数量的 PCD/JPG
+#   2. 网络连续 quiet_ms 毫秒没有新的 PCD/JPG 到达（避免"数量刚好够但其实还有资源在路上"）
+#   3. 再额外等待 render_settle_ms，让 WebGL/Canvas/3D BBox 渲染稳定
+# 超时不会中断程序，只会记录 warning，照样往下截图。
+# -------------------------------------------------------------
+frame_ready:
+  wait_for_pcd: true
+  expected_pcd_count: 1
+  wait_for_jpg: true
+  expected_jpg_count: 5
+  timeout_seconds: 60   # 站点较卡，从 15 调大到 60，给资源更多加载时间
+  quiet_ms: 800
+  render_settle_ms: 3000   # 从 500 调大到 3000：PCD/JPG 网络确认加载完成后，3D BBox 渲染
+                            # 经常还要再等一会儿才跟上（实测过有些帧滞后 1~3 帧的时间），
+                            # 调大这个值让 BBox 提取前有更多缓冲。这是固定延迟，不保证
+                            # 100% 覆盖所有滞后情况，用户已确认接受部分帧仍可能有问题。
+  poll_interval_ms: 50
+
+# -------------------------------------------------------------
+# BBox 只读探测（bbox_probe.py）
+# 只读取页面已有的 JS 全局变量/Three.js 场景，不修改任何平台数据。
+# 探测本身的任何异常都不会影响主流程（截图和网络记录照常进行）。
+# -------------------------------------------------------------
+bbox_probe:
+  enabled: true
+  # first_frame_only : 只在第一个成功抓取的帧探测一次（注意不是"循环第 0 次"——
+  #                     如果第 1 帧翻页/截图失败，会顺延到下一个成功的帧再探测）
+  # every_frame       : 每一帧都探测（默认，会比只探测一帧慢，但能看到 BBox 是否随帧变化）
+  # disabled          : 完全不探测
+  mode: "every_frame"
+  output_filename: "bbox_probe_report.json"
+
+  # 在 window 全局对象的 key 名里做子串匹配（大小写不敏感）的关键词列表
+  keywords:
+    - viewer
+    - scene
+    - store
+    - annotation
+    - annotations
+    - boxes
+    - bbox
+    - cube
+    - cubes
+    - object
+    - objects
+    - track
+    - tracks
+    - label
+    - psr
+    - position
+    - rotation
+    - scale
+
+  # 命中关键词后，往对象内部再深挖几层去找嵌套字段（层数越多越慢，也越可能报错/超时）
+  max_depth: 2
+
+# -------------------------------------------------------------
+# BBox 干净提取（bbox_extractor.py）
+# 跟上面的 bbox_probe 是两回事：bbox_probe 是广撒网探测"数据大概在哪"，
+# 这个是已经确认了确切位置（window.viewer.recycleVolumes[i].position/rotation/scale）
+# 之后做的针对性提取，每帧产出结构化的 BBox 数值，写入 bbox_data.csv，供 rule_engine.py 使用。
+# 只读属性，不调用任何函数，不修改任何数据。
+# 已知限制：trackId / className（类别标签）目前经常读到 null，几何数据（位置/朝向/尺寸）
+# 是确认过的真实数值；类别标签的关联方式还没找到，先原样留空。
+# -------------------------------------------------------------
+bbox_extract:
+  enabled: true
+  output_filename: "bbox_data.csv"
+
+# -------------------------------------------------------------
+# 质检规则引擎（rule_engine.py）
+# 在全部帧采集完成、bbox_data.csv 写好之后才会运行（不是边采集边判断）。
+# 新增规则只需要在 rule_engine.py 里写函数、注册到 RULE_REGISTRY，再把名字加到
+# enabled_rules 里启用，不需要改这个文件之外的任何模块。
+# 可以用 `python rule_engine.py` 单独对着已有的 bbox_data.csv 重新跑规则，
+# 不需要重新打开浏览器、重新采集。
+# -------------------------------------------------------------
+rule_engine:
+  output_filename: "rule_report.csv"
+
+  # 当前启用的规则，按需要增删（规则实现见 rule_engine.py 里同名函数）
+  enabled_rules:
+    - LabelConsistency        # 同一目标跨帧类别不能变
+    - PositionJump             # 同一目标跨帧位置跳变超过阈值
+    - RotationJump               # 同一目标跨帧 rotation_z 跳变超过阈值
+    - SizeConsistency              # 同一目标跨帧尺寸变化比例超过阈值
+    - BrokenTrack                    # 同一目标连续消失 <= N 帧后又出现（默认 Info，满足条件才升级 Warning）
+    - EmptyFrame                         # 某帧一个框都没有
+    - SizeOutlier                          # 框的任一尺寸小于/大于合理范围
+    - StaticObjectPosition                   # 静止目标（灯塔/塔桥/场桥/雪糕筒等）不应该移动
+
+  # ---- 以下是各规则的参数，全部集中在这里，不要硬编码进代码 ----
+  position_jump_threshold: 25.0     # 米，PositionJump 用（原来 10m 太容易误报，改成 25m）
+  rotation_jump_threshold: 1.0       # 弧度，RotationJump 用（已处理角度环绕）
+  size_change_threshold: 0.3          # 比例（0.3 = 30%），SizeConsistency 用
+  broken_track_gap: 3                    # 帧，BrokenTrack 用（消失超过这个数就不算 broken，算正常离场）
+  size_outlier_min: 0.1                    # 米，SizeOutlier 下限
+  size_outlier_max: 30.0                     # 米，SizeOutlier 上限
+  static_object_position_threshold: 0.5        # 米，StaticObjectPosition 用，所有类别统一用这一个阈值
+  static_object_classes:                         # 视为"静止不该动"的类别（className），按需增删
+    - "灯塔"
+    - "岸桥"
+    - "场桥"
+    - "场桥 轮胎吊 轨道吊"                            # 平台上这个类别的完整 className 是这个复合名，不是单独"场桥"两个字
+    - "雪糕筒"
+
+# -------------------------------------------------------------
+# 报告设置（report.py）
+# capture_report.csv 汇总每帧的切帧状态、就绪状态、PCD/JPG 数量、截图路径，
+# 以及判断分析阶段（analyze.py）要用到的 ai_status 等占位字段。
+# -------------------------------------------------------------
+report:
+  output_dir: "outputs/reports"
+  capture_report_filename: "capture_report.csv"
+
+# -------------------------------------------------------------
+# 判断分析模块（第一版为空，预留给后续的规则引擎 / AI 视觉模型）
+# 抓取（浏览+截图）和判断分析是两个独立阶段：
+#   main.py     只做抓取，产出截图 + capture_report.csv
+#   analyze.py  读 capture_report.csv 做判断分析，不需要打开浏览器
+# 新增分析器后，把名字加入下面的 enabled_analyzers 列表即可启用，
+# 具体注册方式见 analyzers.py 顶部注释。
+# -------------------------------------------------------------
+analysis:
+  enabled_analyzers: []   # 例如以后填 ["rules", "ai_vision"]
+
+# -------------------------------------------------------------
+# AI 视觉分析预留接口（第一版不启用）
+# -------------------------------------------------------------
+ai_vision:
+  enabled: false
+  # 后续接入视觉模型时在这里填写相关配置（模型名、endpoint 等）
+  provider: ""
+  model: ""
